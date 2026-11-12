@@ -2,3 +2,8 @@ node_modules/
 data/
 *.log
 .DS_Store
+
+# local env
+.env
+.env.*
+!.env.example

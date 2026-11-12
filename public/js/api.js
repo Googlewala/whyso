@@ -1,28 +1,68 @@
-const state = { userId: 1 };
+const state = { user: null };
 
-export function currentUserId() { return state.userId; }
-export function setCurrentUserId(id) { state.userId = Number(id) || 1; }
+const TOKEN_KEY = 'whyso_token';
 
-function withUser(url) {
-  const u = new URL(url, location.origin);
-  if (!u.searchParams.has('user_id')) u.searchParams.set('user_id', String(state.userId));
-  return u.pathname + u.search;
+export function getToken() {
+  try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
+}
+export function setToken(token) {
+  try { token ? localStorage.setItem(TOKEN_KEY, token) : localStorage.removeItem(TOKEN_KEY); } catch { /* storage disabled */ }
 }
 
-async function request(method, path, body) {
-  const res = await fetch(withUser(path), {
+export function currentUser() { return state.user; }
+export function setCurrentUser(user) { state.user = user; }
+
+/** Called when the server rejects our session so the shell can show login. */
+let onUnauthorized = null;
+export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
+
+async function request(method, path, body, { retry = true } = {}) {
+  const headers = {};
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  const token = getToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  const res = await fetch(path, {
     method,
-    headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+
+  if (res.status === 401 && retry) {
+    setToken(null);
+    state.user = null;
+    onUnauthorized?.();
+  }
+
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
-  if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
+  if (!res.ok) {
+    const err = new Error(data?.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.fields = data?.fields;
+    err.upgrade = Boolean(data?.upgrade);
+    throw err;
+  }
   return data;
 }
 
 export const api = {
+  // auth
+  signup: (b) => request('POST', '/api/auth/signup', b),
+  login: (b) => request('POST', '/api/auth/login', b),
+  demoLogin: () => request('POST', '/api/auth/demo', {}),
+  logout: () => request('POST', '/api/auth/logout', {}),
+  me: () => request('GET', '/api/auth/me'),
+  updateMe: (b) => request('PATCH', '/api/auth/me', b),
+  changePassword: (b) => request('POST', '/api/auth/change-password', b),
+
+  // billing
+  billingStatus: () => request('GET', '/api/billing/status'),
+  checkout: (b = {}) => request('POST', '/api/billing/checkout', b),
+  portal: (b = {}) => request('POST', '/api/billing/portal', b),
+  devActivate: (plan) => request('POST', '/api/billing/dev-activate', { plan }),
+
   bootstrap: () => request('GET', '/api/bootstrap'),
   summary: (q = {}) => request('GET', `/api/analytics/summary${qs(q)}`),
   insights: () => request('GET', '/api/insights'),
@@ -37,6 +77,7 @@ export const api = {
   parseQr: (text) => request('POST', '/api/upi/parse', { text }),
   payLink: (b) => request('POST', '/api/upi/link', b),
   payees: () => request('GET', '/api/upi/payees'),
+  scanHistory: () => request('GET', '/api/upi/history'),
 
   groups: () => request('GET', '/api/groups'),
   group: (id) => request('GET', `/api/groups/${id}`),
@@ -73,7 +114,14 @@ function qs(obj) {
   return s ? `?${s}` : '';
 }
 
-export const statementUrl = (q = {}) => withUser(`/api/statement.pdf${qs(q)}`);
+/** Statement PDFs open in a new tab, so the token rides along as a query param. */
+export const statementUrl = (q = {}) => {
+  const params = new URLSearchParams(qs(q).replace(/^\?/, ''));
+  const token = getToken();
+  if (token) params.set('access_token', token);
+  return `/api/statement.pdf?${params.toString()}`;
+};
+
 export const qrUrl = (q = {}) => {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== null && v !== '') p.set(k, v);

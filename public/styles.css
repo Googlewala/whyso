@@ -298,3 +298,66 @@ table.tbl tbody tr:hover { background: #fafbff; }
   .g-2, .g-3, .g-4 { grid-template-columns: 1fr; }
   .bar-row { grid-template-columns: 100px 1fr 84px; }
 }
+
+/* ---------------- auth screen ---------------- */
+
+.auth-root { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0f1027; z-index: 60; padding: 24px; overflow: auto; }
+.auth-bg { position: absolute; inset: 0; background:
+  radial-gradient(900px 500px at 15% 10%, rgba(99,102,241,.35), transparent 60%),
+  radial-gradient(700px 500px at 85% 90%, rgba(16,185,129,.28), transparent 60%); }
+.auth-card { position: relative; width: min(430px, 100%); background: #fff; border-radius: 18px; padding: 30px 30px 24px; box-shadow: 0 30px 70px rgba(0,0,0,.45); }
+.auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.brand-mark.big { width: 46px; height: 46px; font-size: 24px; }
+.auth-title { margin: 0 0 4px; font-size: 22px; }
+.auth-sub { margin: 0 0 18px; font-size: 13px; }
+.auth-card .field { margin-bottom: 14px; }
+.auth-card input { width: 100%; }
+.auth-card input.invalid { border-color: #dc2626; background: #fff5f5; }
+.field-error { color: #dc2626; font-size: 11.5px; margin-top: 4px; min-height: 0; }
+.auth-error { background: #fee2e2; color: #b91c1c; border-radius: 10px; padding: 10px 12px; font-size: 12.5px; margin-bottom: 14px; }
+.auth-submit { width: 100%; margin-top: 6px; }
+.auth-demo { width: 100%; margin-top: 10px; }
+.auth-switch { margin-top: 16px; text-align: center; font-size: 12.5px; }
+.auth-switch a { color: var(--brand); font-weight: 600; text-decoration: none; }
+
+/* ---------------- account menu ---------------- */
+
+.sidebar-foot { position: relative; }
+.user-chip { width: 100%; background: transparent; border: 0; text-align: left; cursor: pointer; padding: 6px; border-radius: 10px; }
+.user-chip:hover { background: rgba(255,255,255,.05); }
+.user-chip .chev { margin-left: auto; color: #8b95b5; }
+.account-menu { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; background: #1b1e42; border: 1px solid #2c3060; border-radius: 12px; padding: 6px; display: none; flex-direction: column; gap: 2px; box-shadow: 0 18px 40px rgba(0,0,0,.5); z-index: 40; }
+.account-menu.open { display: flex; }
+.account-menu .menu-item { background: transparent; border: 0; color: #cbd5e1; text-align: left; padding: 9px 10px; border-radius: 8px; font-size: 12.5px; cursor: pointer; }
+.account-menu .menu-item:hover { background: rgba(255,255,255,.06); }
+.account-menu .menu-item.danger { color: #fca5a5; }
+.account-menu .menu-item.muted { color: #8b95b5; cursor: default; padding-bottom: 4px; }
+
+/* ---------------- billing ---------------- */
+
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
+.plan-card { position: relative; border: 1px solid var(--line, #e2e8f0); border-radius: 16px; padding: 20px; background: #fff; display: flex; flex-direction: column; gap: 10px; }
+.plan-card.pro { border-color: #4f46e5; box-shadow: 0 12px 34px rgba(79,70,229,.14); }
+.plan-card.current { background: #f8fafc; }
+.plan-flag { position: absolute; top: -11px; right: 16px; background: #4f46e5; color: #fff; font-size: 10.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; }
+.plan-name { font-weight: 700; font-size: 15px; }
+.plan-price { display: flex; align-items: baseline; gap: 4px; }
+.plan-price .amt { font-size: 30px; font-weight: 750; letter-spacing: -.5px; }
+.plan-price .per { color: #64748b; font-size: 12.5px; }
+.plan-tagline { font-size: 12.5px; }
+.plan-features { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.plan-features li::before { content: '✓'; color: #16a34a; font-weight: 700; margin-right: 7px; }
+.plan-limits { display: flex; gap: 14px; flex-wrap: wrap; border-top: 1px dashed #e2e8f0; padding-top: 10px; margin-top: 4px; font-size: 11.5px; }
+.plan-limits div { display: flex; gap: 4px; }
+.usage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin: 12px 0; }
+.usage-card { background: #f8fafc; border-radius: 12px; padding: 12px; }
+.usage-val { font-size: 18px; margin: 2px 0 8px; }
+.faq { border-bottom: 1px solid #eef2f7; padding: 8px 0; }
+.faq summary { cursor: pointer; font-weight: 600; font-size: 13px; }
+.faq p { margin: 6px 0 0; font-size: 12.5px; }
+.notice { display: flex; align-items: center; gap: 10px; background: #eef2ff; border-radius: 12px; padding: 12px 14px; font-size: 12.5px; }
+.notice.upgrade { background: #fff7ed; }
+.notice .em { font-size: 18px; }
+.notice > div { flex: 1; }
+.skeleton { background: linear-gradient(90deg,#eef2f7 25%,#e2e8f0 37%,#eef2f7 63%); background-size: 400% 100%; animation: sk 1.3s ease infinite; border-radius: 10px; }
+@keyframes sk { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }

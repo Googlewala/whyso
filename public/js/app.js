@@ -1,4 +1,4 @@
-import { api, currentUserId, setCurrentUserId } from './api.js';
+import { api, getToken, setToken, setUnauthorizedHandler, setCurrentUser, currentUser } from './api.js';
 import { $, clear, h, initials, toast } from './ui.js';
 
 import { dashboardView } from './views/dashboard.js';
@@ -10,6 +10,8 @@ import { analyticsView } from './views/analytics.js';
 import { importView } from './views/import.js';
 import { statementView } from './views/statement.js';
 import { settingsView } from './views/settings.js';
+import { authView } from './views/auth.js';
+import { billingView } from './views/billing.js';
 
 export const app = { data: null };
 
@@ -22,7 +24,8 @@ const ROUTES = [
   { id: 'analytics', label: 'Analytics', icon: '📈', group: 'Insights', title: 'Analytics', sub: 'Where your money actually goes', view: analyticsView },
   { id: 'import', label: 'Import', icon: '📥', group: 'Insights', title: 'Import transactions', sub: 'Turn bank SMS and CSV statements into expenses', view: importView },
   { id: 'statement', label: 'Statement (PDF)', icon: '🧾', group: 'Insights', title: 'Statement generator', sub: 'Export a full PDF statement with charts and insights', view: statementView },
-  { id: 'settings', label: 'Settings', icon: '⚙️', group: 'Insights', title: 'Settings', sub: 'Budgets, recurring payments and categories', view: settingsView },
+  { id: 'billing', label: 'Plan & Billing', icon: '⭐', group: 'Account', title: 'Plan & Billing', sub: 'Manage your subscription and usage', view: billingView },
+  { id: 'settings', label: 'Settings', icon: '⚙️', group: 'Account', title: 'Settings', sub: 'Budgets, recurring payments and categories', view: settingsView },
 ];
 
 export function navigate(id, params = {}) {
@@ -72,42 +75,83 @@ function buildNav() {
 }
 
 function renderUser() {
-  const u = app.data.user;
+  const u = app.data?.user;
   $('#user-name').textContent = u?.name || '—';
-  $('#user-vpa').textContent = u?.vpa || 'no UPI ID';
+  const plan = u?.plan === 'pro' ? '⭐ Pro' : 'Free plan';
+  $('#user-vpa').textContent = u?.vpa ? `${u.vpa} · ${plan}` : plan;
   $('#user-avatar').textContent = initials(u?.name);
 }
 
+/** Shows the sign-in screen and hides the app shell. */
+function showAuth() {
+  setCurrentUser(null);
+  $('#app-shell').style.display = 'none';
+  const host = clear($('#auth-root'));
+  host.style.display = 'flex';
+  host.append(authView({ onAuthed: onAuthed, demoAvailable: true }));
+}
+
+function onAuthed(user) {
+  setCurrentUser(user);
+  $('#auth-root').style.display = 'none';
+  $('#auth-root').replaceChildren();
+  $('#app-shell').style.display = '';
+  boot();
+}
+
+export async function logout() {
+  try { await api.logout(); } catch { /* already gone */ }
+  setToken(null);
+  showAuth();
+}
+
 async function boot() {
+  if (!getToken()) return showAuth();
   try {
     app.data = await api.bootstrap();
   } catch (err) {
-    $('#view').append(h('div', { class: 'card' }, h('h3', { text: 'Could not reach the server' }), h('p', { class: 'muted', text: err.message })));
+    if (err.status === 401) return showAuth();
+    $('#view').replaceChildren(h('div', { class: 'card' },
+      h('h3', { text: 'Could not reach the server' }),
+      h('p', { class: 'muted', text: err.message }),
+      h('button', { class: 'btn', text: 'Retry', onclick: () => boot() }),
+    ));
     return;
   }
-  setCurrentUserId(app.data.user.id);
+  setCurrentUser(app.data.user);
   buildNav();
   renderUser();
-
-  const sel = clear($('#user-switch'));
-  sel.append(h('option', { value: '', text: 'Switch user…' }));
-  for (const u of app.data.users) sel.append(h('option', { value: u.id, text: u.name }));
-  sel.addEventListener('change', async () => {
-    if (!sel.value) return;
-    setCurrentUserId(sel.value);
-    app.data = await api.bootstrap();
-    renderUser();
-    toast(`Viewing as ${app.data.user.name}`);
-    render(location.hash.slice(1) || 'dashboard');
-  });
-
+  wireAccountMenu();
   window.addEventListener('hashchange', () => { pendingParams = {}; render(location.hash.slice(1) || 'dashboard'); });
   render(location.hash.slice(1) || 'dashboard');
 }
 
+function wireAccountMenu() {
+  const btn = $('#account-btn');
+  if (!btn || btn.dataset.wired) return;
+  btn.dataset.wired = '1';
+  btn.addEventListener('click', () => {
+    const menu = clear($('#account-menu'));
+    menu.replaceChildren(
+      h('div', { class: 'menu-item muted tiny', text: app.data?.user?.email || '' }),
+      h('button', { class: 'menu-item', text: '⭐ Plan & billing', onclick: () => { close(); navigate('billing'); } }),
+      h('button', { class: 'menu-item', text: '⚙️ Settings', onclick: () => { close(); navigate('settings'); } }),
+      h('button', { class: 'menu-item danger', text: '↩︎ Sign out', onclick: () => { close(); logout(); } }),
+    );
+    menu.classList.toggle('open');
+    function close() { menu.classList.remove('open'); }
+    setTimeout(() => document.addEventListener('click', function onDoc(e) {
+      if (!menu.contains(e.target) && e.target !== btn) { close(); document.removeEventListener('click', onDoc); }
+    }), 0);
+  });
+}
+
 export async function refreshShell() {
   app.data = await api.bootstrap();
+  setCurrentUser(app.data.user);
   renderUser();
 }
 
+setUnauthorizedHandler(showAuth);
 boot();
+void currentUser;

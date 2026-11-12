@@ -1,17 +1,30 @@
 {
   "name": "whyso-app",
   "version": "1.0.0",
-  "description": "Whyso — UPI-aware expenses manager",
-  "main": "index.js",
-  "scripts": {
-    "test": "node --test",
-    "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+  "description": "Whyso — UPI-aware expenses manager with split groups, occasion planning and PDF statements",
+  "main": "src/server.js",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
   },
-  "keywords": [],
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "migrate": "node scripts/migrate.js",
+    "seed": "node scripts/seed.js",
+    "healthcheck": "node scripts/healthcheck.js"
+  },
+  "keywords": [
+    "upi",
+    "expenses",
+    "expense-manager",
+    "splitwise",
+    "bharat-qr",
+    "pdf-statement"
+  ],
   "author": "",
   "license": "ISC",
-  "type": "module",
   "dependencies": {
     "express": "^5.3.0",
     "jpeg-js": "^0.4.4",

@@ -7,8 +7,7 @@ import { openExpenseForm } from './expenses.js';
 
 /** Fetch scan history through the shared api wrapper (kept here so the view stays self-contained). */
 async function scanHistory() {
-  const res = await fetch(`/api/upi/history?user_id=${app.data.user.id}`);
-  return res.ok ? res.json() : [];
+  try { return await api.scanHistory(); } catch { return []; }
 }
 
 export function scanView({ actions }) {

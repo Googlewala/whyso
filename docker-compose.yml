@@ -1,0 +1,32 @@
+services:
+  whyso:
+    build: .
+    image: whyso:latest
+    restart: unless-stopped
+    ports:
+      - "12000:12000"
+    environment:
+      NODE_ENV: production
+      PORT: "12000"
+      HOST: 0.0.0.0
+      APP_URL: ${APP_URL:-http://localhost:12000}
+      WHYSO_DB: /data/whyso.db
+      WHYSO_DEMO: ${WHYSO_DEMO:-0}
+      WHYSO_ALLOW_SIGNUP: ${WHYSO_ALLOW_SIGNUP:-1}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+    volumes:
+      - whyso-data:/data
+    healthcheck:
+      test: ["CMD", "node", "scripts/healthcheck.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    stop_grace_period: 20s
+
+volumes:
+  whyso-data:

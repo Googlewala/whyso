@@ -8,50 +8,83 @@ import { computeShares, groupLedger, groupBalances, simplifyDebts } from '../spl
 import { inferCategory, seedIfEmpty } from '../seed.js';
 import { analyse, payeeDirectory, recommendBudgets } from '../analytics.js';
 import { buildStatement } from '../statement.js';
+import { config } from '../config.js';
+import { billingStatus, checkCountLimit, checkQuota, incrementUsage, planFor, usageSummary } from '../billing.js';
 
 export const router = express.Router();
 
 const round2 = (n) => Math.round(n * 100) / 100;
-const DEFAULT_USER = 1;
 
-function userId(req) {
-  const u = Number(req.query.user_id || req.body?.user_id || DEFAULT_USER);
-  return Number.isFinite(u) && u > 0 ? u : DEFAULT_USER;
-}
-
-function bad(res, message, status = 400) {
-  return res.status(status).json({ error: message });
+function bad(res, message, status = 400, extra = {}) {
+  return res.status(status).json({ error: message, ...extra });
 }
 
 const ok = (res, data, status = 200) => res.status(status).json(data);
+
+/** 401 for anonymous callers. Every data route is mounted behind this. */
+function requireAuth(req, res, next) {
+  if (!req.user) return bad(res, 'Please sign in to continue.', 401);
+  next();
+}
+
+/** 403 when the caller is not a member of the group they are addressing. */
+function assertGroupAccess(userId, groupId, res) {
+  const group = get(`SELECT * FROM groups WHERE id = :g`, { g: groupId });
+  if (!group) { bad(res, 'Group not found', 404); return null; }
+  const member = get(`SELECT 1 AS ok FROM group_members WHERE group_id = :g AND user_id = :u`, { g: groupId, u: userId });
+  if (!member && group.owner_id !== userId) { bad(res, 'You are not a member of this group.', 403); return null; }
+  return group;
+}
+
+/** Returns false and sends 402/429-style quota error when the action is blocked. */
+function enforceQuota(res, user, metric, opts) {
+  const blocked = checkQuota(user, metric, opts);
+  if (!blocked) return true;
+  bad(res, blocked.error, 402, { upgrade: true, quota: blocked });
+  return false;
+}
+
+function enforceCount(res, user, limitKey, current, label) {
+  const blocked = checkCountLimit(user, limitKey, current, label);
+  if (!blocked) return true;
+  bad(res, blocked.error, 402, { upgrade: true, quota: blocked });
+  return false;
+}
+
+router.use(requireAuth);
 
 /* ------------------------------------------------------------------ *
  * Bootstrap
  * ------------------------------------------------------------------ */
 
 router.get('/bootstrap', (req, res) => {
-  const uid = userId(req);
-  const users = all(`SELECT id, name, vpa FROM users ORDER BY id`);
+  const uid = req.user.id;
   const categories = all(`SELECT * FROM categories ORDER BY name`);
-  const user = users.find((u) => u.id === uid) || users[0];
   ok(res, {
-    user,
-    users,
+    user: { id: req.user.id, name: req.user.name, email: req.user.email, vpa: req.user.vpa, plan: req.user.plan, plan_status: req.user.plan_status },
     categories,
     accounts: all(`SELECT * FROM accounts WHERE user_id = :u`, { u: uid }),
     groups: all(
       `SELECT g.*, (SELECT COUNT(*) FROM group_members m WHERE m.group_id = g.id) AS member_count
-         FROM groups g WHERE g.archived = 0 ORDER BY g.created_at DESC`,
+         FROM groups g
+        WHERE g.archived = 0
+          AND (g.owner_id = :u OR EXISTS (SELECT 1 FROM group_members m WHERE m.group_id = g.id AND m.user_id = :u))
+        ORDER BY g.created_at DESC`,
+      { u: uid },
     ),
     occasions: all(`SELECT * FROM occasions WHERE user_id = :u ORDER BY date`, { u: uid }),
     counts: {
       expenses: get(`SELECT COUNT(*) c FROM expenses WHERE user_id = :u`, { u: uid }).c,
-      scans: get(`SELECT COUNT(*) c FROM scans`).c,
+      scans: get(`SELECT COUNT(*) c FROM scans WHERE user_id = :u`, { u: uid }).c,
     },
+    billing: billingStatus(req.user),
+    usage: usageSummary(req.user),
   });
 });
 
 router.post('/seed', (req, res) => {
+  // Seeding inserts the shared demo dataset; only expose it in demo mode.
+  if (!config.demoMode) return bad(res, 'Not available.', 404);
   ok(res, seedIfEmpty());
 });
 
@@ -66,13 +99,14 @@ router.post('/upi/parse', (req, res) => {
   const category = parsed.kind === 'upi' ? inferCategory(`${parsed.name || ''} ${parsed.note || ''}`, parsed.mcc) : null;
   const saved = run(
     `INSERT INTO scans (user_id, raw, kind, parsed) VALUES (:u, :raw, :kind, :parsed)`,
-    { u: userId(req), raw: String(text), kind: parsed.kind, parsed: JSON.stringify(parsed) },
+    { u: req.user.id, raw: String(text), kind: parsed.kind, parsed: JSON.stringify(parsed) },
   );
+  incrementUsage(req.user.id, 'scan');
   ok(res, { scan_id: Number(saved.lastInsertRowid), parsed, suggested_category: category });
 });
 
 router.get('/upi/history', (req, res) => {
-  ok(res, all(`SELECT id, raw, kind, parsed, created_at FROM scans ORDER BY id DESC LIMIT 30`)
+  ok(res, all(`SELECT id, raw, kind, parsed, created_at FROM scans WHERE user_id = :u ORDER BY id DESC LIMIT 30`, { u: req.user.id })
     .map((s) => ({ ...s, parsed: JSON.parse(s.parsed) })));
 });
 
@@ -87,7 +121,7 @@ router.post('/upi/link', (req, res) => {
   }
 });
 
-router.get('/upi/payees', (req, res) => ok(res, payeeDirectory(userId(req))));
+router.get('/upi/payees', (req, res) => ok(res, payeeDirectory(req.user.id)));
 
 router.post('/upi/scan-image', express.json({ limit: '12mb' }), (req, res) => {
   ok(res, { message: 'Image decoding happens in the browser; POST the decoded string to /api/upi/parse.' });
@@ -112,7 +146,7 @@ function expenseRow(id) {
 }
 
 router.get('/expenses', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   const { q, category_id, group_id, occasion_id, method, from, to, direction, limit = 200, offset = 0 } = req.query;
   const where = [`e.user_id = :u`];
   const params = { u: uid, limit: Math.min(Number(limit) || 200, 1000), offset: Number(offset) || 0 };
@@ -154,7 +188,7 @@ router.get('/expenses', (req, res) => {
 
 router.get('/expenses/:id', (req, res) => {
   const row = expenseRow(Number(req.params.id));
-  if (!row) return bad(res, 'Expense not found', 404);
+  if (!row || row.user_id !== req.user.id) return bad(res, 'Expense not found', 404);
   row.shares = all(
     `SELECT s.user_id, s.share, s.weight, u.name FROM group_expense_shares s JOIN users u ON u.id = s.user_id
       WHERE s.expense_id = :e`,
@@ -164,10 +198,11 @@ router.get('/expenses/:id', (req, res) => {
 });
 
 router.post('/expenses', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   const b = req.body || {};
   const amount = parseAmount(b.amount);
   if (amount === null || amount <= 0) return bad(res, 'A positive amount is required.');
+  if (!enforceQuota(res, req.user, 'expense')) return;
 
   const direction = b.direction === 'credit' ? 'credit' : 'debit';
   const category = b.category_id
@@ -186,6 +221,14 @@ router.post('/expenses', (req, res) => {
     const members = all(`SELECT user_id FROM group_members WHERE group_id = :g`, { g: groupId });
     if (!members.length) return bad(res, 'This group has no members to split with.');
     participants = members.map((m) => ({ user_id: m.user_id }));
+  }
+
+  // A group expense must target a group the caller belongs to.
+  if (groupId && !assertGroupAccess(uid, groupId, res)) return;
+  // Personal expenses must not silently reference someone else's occasion.
+  if (b.occasion_id) {
+    const occ = get(`SELECT user_id FROM occasions WHERE id = :id`, { id: Number(b.occasion_id) });
+    if (!occ || occ.user_id !== uid) return bad(res, 'Occasion not found', 404);
   }
 
   try {
@@ -224,6 +267,7 @@ router.post('/expenses', (req, res) => {
       }
       return id;
     });
+    incrementUsage(uid, 'expense');
     ok(res, { expense: expenseRow(created) }, 201);
   } catch (err) {
     bad(res, err.message);
@@ -233,12 +277,18 @@ router.post('/expenses', (req, res) => {
 router.put('/expenses/:id', (req, res) => {
   const id = Number(req.params.id);
   const existing = get(`SELECT * FROM expenses WHERE id = :id`, { id });
-  if (!existing) return bad(res, 'Expense not found', 404);
+  if (!existing || existing.user_id !== req.user.id) return bad(res, 'Expense not found', 404);
   const b = req.body || {};
   const amount = b.amount !== undefined ? parseAmount(b.amount) : existing.amount;
   if (amount === null || amount <= 0) return bad(res, 'A positive amount is required.');
   const category = b.category_id ? get(`SELECT * FROM categories WHERE id = :id`, { id: Number(b.category_id) })
     : b.merchant ? inferCategory(`${b.merchant} ${b.note || ''}`, b.mcc) : { id: existing.category_id };
+  const nextGroup = b.group_id !== undefined ? (b.group_id ? Number(b.group_id) : null) : existing.group_id;
+  if (nextGroup && !assertGroupAccess(req.user.id, nextGroup, res)) return;
+  if (b.occasion_id) {
+    const occ = get(`SELECT user_id FROM occasions WHERE id = :id`, { id: Number(b.occasion_id) });
+    if (!occ || occ.user_id !== req.user.id) return bad(res, 'Occasion not found', 404);
+  }
 
   run(
     `UPDATE expenses SET amount=:amount, merchant=:merchant, vpa=:vpa, note=:note, category_id=:cat,
@@ -263,7 +313,7 @@ router.put('/expenses/:id', (req, res) => {
 
 router.delete('/expenses/:id', (req, res) => {
   const id = Number(req.params.id);
-  const r = run(`DELETE FROM expenses WHERE id = :id`, { id });
+  const r = run(`DELETE FROM expenses WHERE id = :id AND user_id = :u`, { id, u: req.user.id });
   if (!r.changes) return bad(res, 'Expense not found', 404);
   ok(res, { deleted: id });
 });
@@ -273,7 +323,7 @@ router.delete('/expenses/:id', (req, res) => {
  * ------------------------------------------------------------------ */
 
 router.post('/import/sms', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   const { messages, commit = false, drafts: incoming } = req.body || {};
   // The preview screen sends back the exact rows the user ticked, so trust those verbatim.
   const drafts = Array.isArray(incoming) && incoming.length
@@ -281,20 +331,34 @@ router.post('/import/sms', (req, res) => {
     : (Array.isArray(messages) ? messages : splitSmsBlob(messages)).map((m) => parseBankSms(m));
   if (!drafts.length) return bad(res, 'Provide "messages" as text or an array of strings.');
   if (!commit) return ok(res, { drafts, committed: 0 });
-  ok(res, { drafts, committed: commitDrafts(uid, drafts, 'sms') });
+  if (!enforceQuota(res, req.user, 'expense', { amount: drafts.length })) return;
+  const committed = commitDrafts(uid, drafts, 'sms');
+  incrementUsage(uid, 'expense', committed);
+  ok(res, { drafts, committed });
 });
 
 router.post('/import/csv', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   const { csv, commit = false, drafts: incoming } = req.body || {};
+  const maxRows = planFor(req.user).limits.csv_import_rows;
   if (Array.isArray(incoming) && incoming.length) {
+    if (incoming.length > maxRows) {
+      return bad(res, `Your plan allows importing ${maxRows} rows at a time. Upgrade for larger statements.`, 402, { upgrade: true });
+    }
     if (!commit) return ok(res, { drafts: incoming, warnings: [], committed: 0 });
-    return ok(res, { drafts: incoming, warnings: [], committed: commitDrafts(uid, incoming, 'csv') });
+    const committed = commitDrafts(uid, incoming, 'csv');
+    incrementUsage(uid, 'expense', committed);
+    return ok(res, { drafts: incoming, warnings: [], committed });
   }
   if (!csv) return bad(res, 'Provide "csv" with the statement contents.');
   const { rows, warnings } = parseBankCsv(csv);
+  if (rows.length > maxRows) {
+    return bad(res, `This statement has ${rows.length} rows; your plan allows ${maxRows} at a time. Upgrade for larger imports.`, 402, { upgrade: true });
+  }
   if (!commit) return ok(res, { drafts: rows, warnings, committed: 0 });
-  ok(res, { drafts: rows, warnings, committed: commitDrafts(uid, rows, 'csv') });
+  const committed = commitDrafts(uid, rows, 'csv');
+  incrementUsage(uid, 'expense', committed);
+  ok(res, { drafts: rows, warnings, committed });
 });
 
 function commitDrafts(uid, drafts, source) {
@@ -302,7 +366,7 @@ function commitDrafts(uid, drafts, source) {
   tx(() => {
     for (const d of drafts) {
       if (!d.amount || d.amount <= 0) continue;
-      if (d.ref && get(`SELECT id FROM expenses WHERE txn_ref = :r`, { r: d.ref })) continue;
+      if (d.ref && get(`SELECT id FROM expenses WHERE txn_ref = :r AND user_id = :u`, { r: d.ref, u: uid })) continue;
       const cat = inferCategory(`${d.merchant || ''} ${d.description || ''}`, d.mcc);
       const account = get(`SELECT id FROM accounts WHERE user_id = :u LIMIT 1`, { u: uid });
       run(
@@ -336,22 +400,29 @@ function commitDrafts(uid, drafts, source) {
  * ------------------------------------------------------------------ */
 
 router.get('/groups', (req, res) => {
+  const uid = req.user.id;
   const groups = all(
     `SELECT g.*, u.name AS owner_name,
             (SELECT COUNT(*) FROM group_members m WHERE m.group_id = g.id) AS member_count,
             COALESCE((SELECT SUM(CASE WHEN e.direction='credit' THEN -e.amount ELSE e.amount END)
                         FROM expenses e WHERE e.group_id = g.id AND e.status != 'failed'), 0) AS total_spend
        FROM groups g JOIN users u ON u.id = g.owner_id
-      WHERE g.archived = 0 ORDER BY g.created_at DESC`,
+      WHERE g.archived = 0
+        AND (g.owner_id = :u OR EXISTS (SELECT 1 FROM group_members m WHERE m.group_id = g.id AND m.user_id = :u))
+      ORDER BY g.created_at DESC`,
+    { u: uid },
   );
   ok(res, groups);
 });
 
 router.post('/groups', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   const { name, emoji = '👥', kind = 'trip', member_ids = [], currency = 'INR' } = req.body || {};
   if (!name) return bad(res, 'Group name is required.');
+  const existing = get(`SELECT COUNT(*) c FROM groups WHERE owner_id = :u AND archived = 0`, { u: uid }).c;
+  if (!enforceCount(res, req.user, 'groups', existing, 'groups')) return;
   const members = [...new Set([uid, ...member_ids.map(Number)])].filter((x) => Number.isFinite(x));
+  if (!enforceCount(res, req.user, 'members_per_group', members.length - 1, 'members per group')) return;
   const id = tx(() => {
     const r = run(`INSERT INTO groups (name, emoji, kind, owner_id, currency) VALUES (:n, :e, :k, :o, :c)`,
       { n: name, e: emoji, k: kind, o: uid, c: currency });
@@ -367,6 +438,8 @@ router.post('/groups', (req, res) => {
 
 router.post('/groups/:id/members', (req, res) => {
   const gid = Number(req.params.id);
+  const group = assertGroupAccess(req.user.id, gid, res);
+  if (!group) return;
   const { user_id, name, vpa } = req.body || {};
   let uid = user_id ? Number(user_id) : null;
   if (!uid) {
@@ -374,18 +447,25 @@ router.post('/groups/:id/members', (req, res) => {
     if (vpa && get(`SELECT id FROM users WHERE vpa = :v`, { v: vpa })) return bad(res, 'That UPI ID already exists.');
     uid = Number(run(`INSERT INTO users (name, vpa) VALUES (:n, :v)`, { n: name, v: vpa || null }).lastInsertRowid);
   }
+  const current = get(`SELECT COUNT(*) c FROM group_members WHERE group_id = :g`, { g: gid }).c;
+  const already = get(`SELECT 1 AS ok FROM group_members WHERE group_id = :g AND user_id = :u`, { g: gid, u: uid });
+  if (!already && !enforceCount(res, req.user, 'members_per_group', current, 'members per group')) return;
   run(`INSERT OR IGNORE INTO group_members (group_id, user_id, role) VALUES (:g, :u, 'member')`, { g: gid, u: uid });
   ok(res, { members: all(`SELECT u.id, u.name, u.vpa FROM group_members m JOIN users u ON u.id = m.user_id WHERE m.group_id = :g`, { g: gid }) });
 });
 
 router.delete('/groups/:id/members/:userId', (req, res) => {
+  const gid = Number(req.params.id);
+  if (!assertGroupAccess(req.user.id, gid, res)) return;
   run(`DELETE FROM group_members WHERE group_id = :g AND user_id = :u`,
-    { g: Number(req.params.id), u: Number(req.params.userId) });
+    { g: gid, u: Number(req.params.userId) });
   ok(res, { removed: Number(req.params.userId) });
 });
 
 router.get('/groups/:id', (req, res) => {
-  const ledger = groupLedger(Number(req.params.id));
+  const gid = Number(req.params.id);
+  if (!assertGroupAccess(req.user.id, gid, res)) return;
+  const ledger = groupLedger(gid);
   if (!ledger) return bad(res, 'Group not found', 404);
   const expenses = all(
     `SELECT e.id, e.amount, e.merchant, e.note, e.occurred_at, e.direction, e.user_id, u.name AS paid_by,
@@ -406,10 +486,17 @@ router.get('/groups/:id', (req, res) => {
 
 router.post('/groups/:id/settle', (req, res) => {
   const gid = Number(req.params.id);
+  if (!assertGroupAccess(req.user.id, gid, res)) return;
   const { from_user, to_user, amount, note } = req.body || {};
   const amt = parseAmount(amount);
   if (!from_user || !to_user) return bad(res, 'from_user and to_user are required.');
   if (amt === null || amt <= 0) return bad(res, 'A positive amount is required.');
+  // Both parties must belong to the group being settled.
+  for (const uid of [Number(from_user), Number(to_user)]) {
+    if (!get(`SELECT 1 AS ok FROM group_members WHERE group_id = :g AND user_id = :u`, { g: gid, u: uid })) {
+      return bad(res, 'Both parties must be members of this group.');
+    }
+  }
   const ref = makeTxnRef('STL');
   const r = run(
     `INSERT INTO settlements (group_id, from_user, to_user, amount, method, txn_ref, note)
@@ -463,21 +550,23 @@ function occasionDetail(id) {
 }
 
 router.get('/occasions', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   ok(res, all(`SELECT id FROM occasions WHERE user_id = :u ORDER BY date`, { u: uid }).map((o) => occasionDetail(o.id)));
 });
 
 router.get('/occasions/:id', (req, res) => {
   const o = occasionDetail(Number(req.params.id));
-  if (!o) return bad(res, 'Occasion not found', 404);
+  if (!o || o.user_id !== req.user.id) return bad(res, 'Occasion not found', 404);
   ok(res, o);
 });
 
 router.post('/occasions', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   const { title, type = 'festival', date, budget = 0, color = '#f59e0b', notes = null, status = 'planning' } = req.body || {};
   if (!title) return bad(res, 'Title is required.');
   if (!date) return bad(res, 'Date is required.');
+  const existing = get(`SELECT COUNT(*) c FROM occasions WHERE user_id = :u`, { u: uid }).c;
+  if (!enforceCount(res, req.user, 'occasions', existing, 'occasions')) return;
   const r = run(
     `INSERT INTO occasions (user_id, title, type, date, budget, color, notes, status)
      VALUES (:u, :t, :ty, :d, :b, :c, :n, :s)`,
@@ -489,7 +578,7 @@ router.post('/occasions', (req, res) => {
 router.put('/occasions/:id', (req, res) => {
   const id = Number(req.params.id);
   const existing = get(`SELECT * FROM occasions WHERE id = :id`, { id });
-  if (!existing) return bad(res, 'Occasion not found', 404);
+  if (!existing || existing.user_id !== req.user.id) return bad(res, 'Occasion not found', 404);
   const b = req.body || {};
   run(
     `UPDATE occasions SET title=:t, type=:ty, date=:d, budget=:b, color=:c, notes=:n, status=:s WHERE id=:id`,
@@ -504,7 +593,8 @@ router.put('/occasions/:id', (req, res) => {
 });
 
 router.delete('/occasions/:id', (req, res) => {
-  run(`DELETE FROM occasions WHERE id = :id`, { id: Number(req.params.id) });
+  const r = run(`DELETE FROM occasions WHERE id = :id AND user_id = :u`, { id: Number(req.params.id), u: req.user.id });
+  if (!r.changes) return bad(res, 'Occasion not found', 404);
   ok(res, { deleted: Number(req.params.id) });
 });
 
@@ -513,27 +603,30 @@ router.delete('/occasions/:id', (req, res) => {
  * ------------------------------------------------------------------ */
 
 router.get('/analytics/summary', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
+  const groupId = req.query.group_id ? Number(req.query.group_id) : null;
+  if (groupId && !assertGroupAccess(uid, groupId, res)) return;
   ok(res, analyse({
     userId: uid,
     from: req.query.from,
     to: req.query.to,
-    groupId: req.query.group_id ? Number(req.query.group_id) : null,
+    groupId,
   }));
 });
 
-router.get('/analytics/budget-recommendations', (req, res) => ok(res, recommendBudgets(userId(req))));
+router.get('/analytics/budget-recommendations', (req, res) => ok(res, recommendBudgets(req.user.id)));
 
 router.get('/budgets', (req, res) => {
   ok(res, all(
     `SELECT b.*, c.name AS category, c.icon, c.color FROM budgets b JOIN categories c ON c.id = b.category_id
-      WHERE b.user_id = :u ORDER BY c.name`, { u: userId(req) },
+      WHERE b.user_id = :u ORDER BY c.name`, { u: req.user.id },
   ));
 });
 
 router.put('/budgets', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   const { items = [] } = req.body || {};
+  if (!Array.isArray(items)) return bad(res, 'items must be an array.');
   tx(() => {
     for (const it of items) {
       const amt = parseAmount(it.amount);
@@ -555,12 +648,12 @@ router.put('/budgets', (req, res) => {
 router.get('/recurring', (req, res) => {
   ok(res, all(
     `SELECT r.*, c.name AS category, c.icon FROM recurring r LEFT JOIN categories c ON c.id = r.category_id
-      WHERE r.user_id = :u ORDER BY r.next_due`, { u: userId(req) },
+      WHERE r.user_id = :u ORDER BY r.next_due`, { u: req.user.id },
   ));
 });
 
 router.post('/recurring', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
   const { merchant, vpa, amount, category_id, frequency = 'monthly', next_due } = req.body || {};
   const amt = parseAmount(amount);
   if (!merchant || amt === null) return bad(res, 'merchant and a numeric amount are required.');
@@ -574,7 +667,8 @@ router.post('/recurring', (req, res) => {
 });
 
 router.delete('/recurring/:id', (req, res) => {
-  run(`DELETE FROM recurring WHERE id = :id`, { id: Number(req.params.id) });
+  const r = run(`DELETE FROM recurring WHERE id = :id AND user_id = :u`, { id: Number(req.params.id), u: req.user.id });
+  if (!r.changes) return bad(res, 'Not found', 404);
   ok(res, { deleted: Number(req.params.id) });
 });
 
@@ -597,12 +691,15 @@ router.post('/categories', (req, res) => {
  * ------------------------------------------------------------------ */
 
 router.get('/insights', (req, res) => {
-  const s = analyse({ userId: userId(req), from: req.query.from, to: req.query.to });
+  const s = analyse({ userId: req.user.id, from: req.query.from, to: req.query.to });
   ok(res, { insights: s.insights, anomalies: s.anomalies, forecast: s.forecast, budgets: s.budgets, recurring: s.recurring });
 });
 
 router.get('/statement.pdf', (req, res) => {
-  const uid = userId(req);
+  const uid = req.user.id;
+  const groupId = req.query.group_id ? Number(req.query.group_id) : null;
+  if (groupId && !assertGroupAccess(uid, groupId, res)) return;
+  if (!enforceQuota(res, req.user, 'statement')) return;
   const include = {
     categories: req.query.categories !== '0',
     trend: req.query.trend !== '0',
@@ -622,9 +719,10 @@ router.get('/statement.pdf', (req, res) => {
       userId: uid,
       from: req.query.from || null,
       to: req.query.to || null,
-      groupId: req.query.group_id ? Number(req.query.group_id) : null,
+      groupId,
       include,
     }, res);
+    incrementUsage(uid, 'statement');
   } catch (err) {
     if (!res.headersSent) {
       res.removeHeader('Content-Disposition');
@@ -637,3 +735,5 @@ router.get('/statement.pdf', (req, res) => {
 });
 
 void initSchema;
+void groupBalances;
+void simplifyDebts;

@@ -146,28 +146,44 @@ function openCreateGroup() {
   const emoji = h('input', { type: 'text', placeholder: '🏝️', value: '👥', style: 'max-width:80px' });
   const kind = h('select', {}, ...['trip', 'household', 'occasion', 'team', 'couple', 'other'].map((k) => h('option', { value: k, text: k })));
   const memberBox = h('div', { class: 'chip-input', style: 'margin-top:8px' });
-  const selected = new Set();
+  const nameInput = h('input', { type: 'text', placeholder: 'Name, e.g. Diya Sharma' });
+  const vpaInput = h('input', { type: 'text', placeholder: 'diya@ybl (optional)' });
+  const pending = [];
 
-  const others = (app.data.users || []).filter((u) => u.id !== app.data.user.id);
-  const chips = others.map((u) => {
-    const chip = h('button', { class: 'chip', type: 'button', style: 'cursor:pointer;opacity:.55', text: `${u.name}`, onclick: () => {
-      if (selected.has(u.id)) { selected.delete(u.id); chip.style.opacity = '.55'; chip.style.background = ''; }
-      else { selected.add(u.id); chip.style.opacity = '1'; chip.style.background = '#dcfce7'; chip.style.color = '#15803d'; }
-    } });
-    return chip;
+  const chips = h('div', { class: 'chip-input', style: 'margin-top:8px' });
+  function renderPending() {
+    chips.replaceChildren(...pending.map((p, i) => h('button', {
+      class: 'chip', type: 'button', style: 'cursor:pointer;background:#fee2e2;color:#b91c1c',
+      text: `${p.name} ✕`,
+      onclick: () => { pending.splice(i, 1); renderPending(); },
+    })));
+  }
+  renderPending();
+  void memberBox;
+
+  const addPerson = h('button', {
+    class: 'btn btn-sm', type: 'button', text: '＋ Add person',
+    onclick: () => {
+      const name = nameInput.value.trim();
+      if (!name) { toast('Type a name first', 'err'); return; }
+      pending.push({ name, vpa: vpaInput.value.trim() || null });
+      nameInput.value = '';
+      vpaInput.value = '';
+      renderPending();
+    },
   });
-  memberBox.append(...chips);
 
   const save = h('button', {
     class: 'btn btn-primary', text: 'Create group',
     onclick: async () => {
       if (!name.value.trim()) { toast('Give the group a name', 'err'); return; }
       try {
-        await api.createGroup({ name: name.value.trim(), emoji: emoji.value.trim() || '👥', kind: kind.value, member_ids: [...selected] });
+        const { group } = await api.createGroup({ name: name.value.trim(), emoji: emoji.value.trim() || '👥', kind: kind.value, member_ids: [] });
+        for (const p of pending) await api.addMember(group.id, { name: p.name, vpa: p.vpa });
         toast('Group created', 'ok');
         m.close();
         await refreshShell();
-        navigate('groups');
+        navigate('groups', { open: group.id });
       } catch (e) { toast(e.message, 'err'); }
     },
   });
@@ -177,24 +193,27 @@ function openCreateGroup() {
     body: frag(
       h('div', { class: 'grid g-2' }, field('Group name', name), field('Emoji', emoji)),
       h('div', { style: 'margin-top:12px' }, field('Type', kind)),
-      h('div', { style: 'margin-top:12px' }, h('label', { class: 'tiny muted', style: 'font-weight:600' }, 'Members (you are added automatically)'), memberBox),
+      h('div', { style: 'margin-top:12px' },
+        h('label', { class: 'tiny muted', style: 'font-weight:600' }, 'Members (you are added automatically)'),
+        h('div', { class: 'grid g-2', style: 'margin-top:6px' }, nameInput, vpaInput),
+        h('div', { style: 'margin-top:8px' }, addPerson),
+        chips,
+      ),
     ),
     footer: [h('button', { class: 'btn', text: 'Cancel', onclick: () => m.close() }), save],
   });
 }
 
 function openAddMember(gid, onDone) {
-  const existing = h('select', {}, h('option', { value: '', text: '— pick an existing user —' }), ...(app.data.users || []).map((u) => h('option', { value: u.id, text: `${u.name}${u.vpa ? ` (${u.vpa})` : ''}` })));
-  const name = h('input', { type: 'text', placeholder: 'Or type a new member name' });
+  const name = h('input', { type: 'text', placeholder: 'Member name, e.g. Kabir Singh' });
   const vpa = h('input', { type: 'text', placeholder: 'their@upi (optional)' });
 
   const save = h('button', {
     class: 'btn btn-primary', text: 'Add member',
     onclick: async () => {
       try {
-        if (existing.value) await api.addMember(gid, { user_id: Number(existing.value) });
-        else if (name.value.trim()) await api.addMember(gid, { name: name.value.trim(), vpa: vpa.value.trim() || null });
-        else { toast('Pick a user or type a name', 'err'); return; }
+        if (!name.value.trim()) { toast('Type a name', 'err'); return; }
+        await api.addMember(gid, { name: name.value.trim(), vpa: vpa.value.trim() || null });
         toast('Member added', 'ok');
         m.close();
         await refreshShell();
@@ -205,7 +224,7 @@ function openAddMember(gid, onDone) {
 
   const m = modal({
     title: 'Add a member',
-    body: frag(field('Existing user', existing), h('div', { class: 'tiny muted', style: 'margin:10px 0' }, '— or create someone new —'), field('Name', name), h('div', { style: 'margin-top:12px' }, field('UPI ID', vpa))),
+    body: frag(field('Name', name), h('div', { style: 'margin-top:12px' }, field('UPI ID', vpa, 'Lets Whyso build a settle-up pay link for them.'))),
     footer: [h('button', { class: 'btn', text: 'Cancel', onclick: () => m.close() }), save],
   });
 }

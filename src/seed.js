@@ -1,4 +1,5 @@
 import { all, get, initSchema, run, tx } from './db.js';
+import { hashPassword } from './auth.js';
 import { computeShares } from './split.js';
 import { categoryFromMcc } from './upi.js';
 
@@ -97,21 +98,61 @@ export function inferCategory(text, mcc) {
   return categoryByName('Transfers') || cats[0];
 }
 
-export function seedIfEmpty() {
+/** Reference data every deployment needs, demo or not. Idempotent. */
+export function seedReferenceData() {
   initSchema();
+  for (const [name, icon, color, keywords] of CATEGORIES) {
+    run(
+      `INSERT OR IGNORE INTO categories (name, icon, color, keywords) VALUES (:name, :icon, :color, :keywords)`,
+      { name, icon, color, keywords },
+    );
+  }
+  return { categories: get(`SELECT COUNT(*) c FROM categories`).c };
+}
+
+export const DEMO_ACCOUNTS = USERS.map((u, i) => ({
+  ...u,
+  email: `${u.name.split(' ')[0].toLowerCase()}@whyso.dev`,
+  password: 'demo1234',
+  primary: i === 0,
+}));
+
+/**
+ * Databases seeded before authentication existed have users with no email or
+ * password. Give the demo accounts working logins without touching real data.
+ */
+export function backfillDemoLogins() {
+  let updated = 0;
+  for (const u of DEMO_ACCOUNTS) {
+    // Match on the demo name and require that the row has no credentials yet,
+    // so a real user who happens to share a name is never touched.
+    const row = get(`SELECT id, email, password_hash FROM users
+                      WHERE name = :n AND email IS NULL AND password_hash IS NULL`, { n: u.name });
+    if (!row) continue;
+    run(`UPDATE users SET email = :e, password_hash = :h, is_demo = 1 WHERE id = :id`,
+      { e: u.email, h: hashPassword(u.password), id: row.id });
+    updated++;
+  }
+  return updated;
+}
+
+/**
+ * Seeds the shared demo workspace (5 users, groups, expenses).
+ * Only runs when the users table is empty. Demo accounts get logins so the
+ * app is explorable without a signup step.
+ */
+export function seedIfEmpty() {
+  seedReferenceData();
   const count = get(`SELECT COUNT(*) c FROM users`).c;
-  if (count > 0) return { seeded: false };
+  if (count > 0) return { seeded: false, backfilled: backfillDemoLogins() };
 
   return tx(() => {
-    for (const [name, icon, color, keywords] of CATEGORIES) {
-      run(
-        `INSERT OR IGNORE INTO categories (name, icon, color, keywords) VALUES (:name, :icon, :color, :keywords)`,
-        { name, icon, color, keywords },
+    const userIds = DEMO_ACCOUNTS.map((u) => {
+      const r = run(
+        `INSERT INTO users (name, vpa, email, password_hash, is_demo, plan)
+         VALUES (:name, :vpa, :email, :hash, 1, 'free')`,
+        { name: u.name, vpa: u.vpa, email: u.email, hash: hashPassword(u.password) },
       );
-    }
-
-    const userIds = USERS.map((u) => {
-      const r = run(`INSERT INTO users (name, vpa) VALUES (:name, :vpa)`, u);
       return Number(r.lastInsertRowid);
     });
     const [aarav, diya, rohan, priya, kabir] = userIds;

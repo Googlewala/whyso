@@ -133,7 +133,6 @@ export async function openExpenseForm(id, onSaved, preset = {}) {
   const groups = app.data.groups || [];
   const occasions = app.data.occasions || [];
   const categories = app.data.categories || [];
-  const users = app.data.users || [];
 
   const splitState = {
     group_id: base.group_id ? String(base.group_id) : '',
