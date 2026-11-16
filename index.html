@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b6b5d">
+<link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon-192.png">
+<title>Pay Desk</title>
+<link rel="stylesheet" href="/app.css"></head><body>
+<main>
+<section id="v-home"></section>
+<section id="v-pay" hidden>
+ <div class="card"><h2>Pay</h2>
+ <label for="pp">To</label><select id="pp"></select>
+ <label for="am">Amount (₹)</label><input id="am" type="number" inputmode="decimal" min="1" step="0.01" placeholder="0">
+ <label for="nt">Note</label><input id="nt" maxlength="50" placeholder="Optional">
+ <label for="ap">Open in</label><select id="ap"><option value="upi">Any UPI app</option><option value="gpay">Google Pay</option><option value="phonepe">PhonePe</option><option value="paytm">Paytm</option></select>
+ <button class="btn" id="go">Continue to payment app</button><div class="er" id="pe" role="alert"></div>
+ <p class="mu">Saved as pending. You'll confirm it when you return.</p></div>
+</section>
+<section id="v-scan" hidden><div class="card"><h2>Scan a UPI QR</h2>
+ <video id="scv" playsinline muted style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:12px;background:#000"></video>
+ <div class="er" id="sce" role="alert"></div>
+ <button class="btn o" id="spic">Use a photo instead</button><input type="file" id="sfile" accept="image/*" hidden>
+ <button class="btn o" data-go="home">Cancel</button>
+ <p class="mu">Works with any shop or person's UPI QR. Nothing is paid until you confirm in your UPI app.</p></div></section>
+<section id="v-qp" hidden><div class="card"><h2>Pay</h2><div id="qpw"></div>
+ <label for="qpa">Amount (₹)</label><input id="qpa" type="number" inputmode="decimal" min="1" step="0.01" placeholder="0">
+ <label>Why are you paying?</label><div class="chips" id="qpc"></div>
+ <label for="qpn">Note (optional)</label><input id="qpn" maxlength="50" placeholder="e.g. Lunch at the dhaba">
+ <label for="qpf">For</label><select id="qpf"></select>
+ <label for="qpo">Open in</label><select id="qpo"><option value="upi">Any UPI app</option><option value="gpay">Google Pay</option><option value="phonepe">PhonePe</option><option value="paytm">Paytm</option></select>
+ <label id="qpsl" style="font-weight:400"><input type="checkbox" id="qps" style="width:auto"> Save to People</label>
+ <button class="btn" id="qpg">Continue to payment app</button><div class="er" id="qpe" role="alert"></div>
+ <button class="btn o" data-go="home">Cancel</button></div></section>
+<section id="v-hist" hidden></section>
+<section id="v-people" hidden></section>
+<section id="v-plans" hidden></section><section id="v-space" hidden></section><section id="v-me" hidden></section>
+</main>
+<button class="fab" id="fab" aria-label="Add expense">+</button>
+<nav><button data-v="home" aria-current="page">Home</button><button data-v="plans">Plans</button><button data-v="people">People</button><button data-v="me">Me</button></nav>
+
+<dialog id="dq"><h2>Add expense</h2>
+ <input id="qa" type="number" inputmode="decimal" min="0.01" step="0.01" placeholder="₹ Amount" aria-label="Amount">
+ <select id="qf" aria-label="For"></select><select id="qb" aria-label="Paid by" hidden style="margin-top:8px"></select><div class="chips" id="qc"></div>
+ <label for="qn">Note</label><input id="qn" maxlength="50" placeholder="Optional">
+ <button class="btn" id="qs">Save</button><button class="btn o" id="qx">Cancel</button><div class="er" id="qe"></div></dialog>
+
+<dialog id="dp"><h2>Add person or biller</h2>
+ <label for="nn">Name</label><input id="nn" placeholder="e.g. MP Electricity">
+ <label for="nu">UPI ID</label><input id="nu" placeholder="name@bank" autocapitalize="off">
+ <label for="nc">Type</label><select id="nc"><option>Person</option><option>Electricity</option><option>Water</option><option>Gas</option><option>Mobile / Internet</option><option>Rent</option><option>Other</option></select>
+ <label for="nd">Due day of month (optional)</label><input id="nd" type="number" min="1" max="31">
+ <button class="btn" id="ns">Save</button><button class="btn o" id="nx">Cancel</button><div class="er" id="ne"></div></dialog>
+
+<dialog id="dpf"><h2>Your profile</h2><p class="mu">Used only on this device to suggest a monthly budget.</p>
+ <label for="pn">Name (optional)</label><input id="pn">
+ <label for="pt">I am a</label><select id="pt"><option>Salaried</option><option>Student</option><option>Freelancer</option><option>Business owner</option><option>Homemaker</option></select>
+ <label for="pi">Monthly income, ₹ (optional)</label><input id="pi" type="number" inputmode="numeric" min="0">
+ <button class="btn" id="ps">Save and suggest budget</button><button class="btn o" id="px">Skip for now</button></dialog>
+<dialog id="dsp"><h2>New plan</h2>
+ <label for="sn">Name</label><input id="sn" placeholder="e.g. Goa trip, Sister's wedding">
+ <label for="st">Type</label><select id="st"><option>Trip</option><option>Tour</option><option>Event</option></select>
+ <label for="sb">Budget, ₹</label><input id="sb" type="number" inputmode="numeric" min="0">
+ <label for="sp">People or guests (optional)</label><input id="sp" type="number" min="0">
+ <label for="sr">Travellers or guests (names, comma separated)</label><input id="sr" placeholder="Me, Amit, Riya"><label for="s1">Starts</label><input id="s1" type="date"><label for="s2">Ends</label><input id="s2" type="date">
+ <button class="btn" id="sv">Create</button><button class="btn o" id="sx">Cancel</button><div class="er" id="se"></div></dialog>
+<dialog id="dpl"><h2>Budget by type</h2><p class="mu">Plan what you expect to spend on each type.</p><div id="plb"></div><button class="btn" id="pls">Save</button><button class="btn o" id="plx">Cancel</button></dialog>
+<dialog id="du"><h2>Free limit reached</h2><p class="mu">Your free plan includes 20 payments and 100 entries a month. Subscribe for ₹20/month for unlimited use. History and export always stay available.</p>
+ <button class="btn" id="ub">Subscribe for ₹20/month</button><input id="ucl" placeholder="Payment ID (pay_…)" hidden style="margin-top:10px"><button class="btn o" id="ud">I've subscribed</button><button class="btn o" id="ux">Not now</button><div class="er" id="ue"></div></dialog>
+
+<script src="/app.js" defer></script></body></html>
